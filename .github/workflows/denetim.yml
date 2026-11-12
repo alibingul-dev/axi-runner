@@ -1,0 +1,29 @@
+name: Günlük denetim
+on:
+  schedule:
+    - cron: "37 21 * * *"  # YEDEK: 00:37 İstanbul. Asıl tetik cron-job.org → workflow_dispatch, 00:00
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      day:
+        description: "Denetlenecek gün (YYYY-MM-DD), boşsa dün"
+        required: false
+concurrency:
+  group: denetim
+  cancel-in-progress: false
+jobs:
+  denetim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - run: python3 scripts/denetim.py
+        env:
+          TODOIST_TOKEN: ${{ secrets.TODOIST_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUDIT_DAY: ${{ github.event.inputs.day }}

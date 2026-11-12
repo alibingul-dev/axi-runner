@@ -1,0 +1,73 @@
+name: news-gif
+
+# Builds media/news-<D>.gif (daily energy-news GIF, kind=news) and newsdata/<D>/signals.json
+# after export_news_data(D, ...) writes newsdata/<D>/gif_request.txt as its last file.
+# Signal labels are recomputed here by scripts/news_signal.py; the JSON never carries labels.
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      day:
+        description: "Publication day (YYYY-MM-DD); empty = latest gif_request"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: news-gif
+  cancel-in-progress: true
+
+jobs:
+  gif:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install pillow numpy
+
+      - name: Wait for the export to finish
+        if: inputs.via == 'push'
+        run: sleep 20 && git pull --ff-only origin main
+
+      - name: Build
+        id: build
+        run: |
+          D="${{ github.event.inputs.day }}"
+          if [ -z "$D" ]; then
+            D=$(git log -1 --format= --name-only -- 'newsdata/*/gif_request.txt' | head -1 | cut -d/ -f2)
+          fi
+          echo "day=$D" >> "$GITHUB_OUTPUT"
+          test -f "newsdata/$D/news.json" || { echo "missing newsdata/$D/news.json"; exit 1; }
+          python scripts/news_signal.py "newsdata/$D/news.json"
+          NEWS_PAGES_DIR="newsdata/$D/pages" python scripts/make_news_gif.py "$D" "media/news-$D.gif" newsdata
+          python - "$D" <<'PY'
+          import os, sys
+          from PIL import Image
+          p = "media/news-%s.gif" % sys.argv[1]
+          im = Image.open(p); n = im.n_frames; mb = os.path.getsize(p) / 1e6
+          print(p, n, "frames", round(mb, 2), "MB")
+          assert n <= 250 and mb <= 8, "over the 250-frame / 8 MB limit"
+          PY
+
+      - name: Commit
+        run: |
+          D="${{ steps.build.outputs.day }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "media/news-$D.gif" "newsdata/$D/signals.json" "newsdata/$D/pages"
+          if git diff --staged --quiet; then echo "no changes"; exit 0; fi
+          git commit -m "media news-$D.gif + signals (news-gif action)"
+          git pull --rebase origin main
+          git push origin HEAD:main

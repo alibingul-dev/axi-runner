@@ -1,0 +1,70 @@
+name: special-gif
+
+# Builds media/special-<D>.gif (special-days series, kind=special) from
+# prompts/special-days/calendar.json with scripts/make_special_gif.py.
+# Trigger: a commit to specialdata/<D>/gif_request.txt, or a manual run with a day.
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      day:
+        description: "Occasion day (YYYY-MM-DD); empty = latest gif_request"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: special-gif
+  cancel-in-progress: false
+
+jobs:
+  gif:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq fonts-inter
+          pip install pillow
+
+      - name: Build
+        id: build
+        run: |
+          D="${{ github.event.inputs.day }}"
+          if [ -z "$D" ]; then
+            D=$(git log -1 --format= --name-only -- 'specialdata/*/gif_request.txt' | head -1 | cut -d/ -f2)
+          fi
+          echo "day=$D" >> "$GITHUB_OUTPUT"
+          mkdir -p media
+          python scripts/make_special_gif.py prompts/special-days/calendar.json "$D" "media/special-$D.gif"
+          python - "$D" <<'PY'
+          import os, sys
+          from PIL import Image
+          p = "media/special-%s.gif" % sys.argv[1]
+          im = Image.open(p); n = im.n_frames; mb = os.path.getsize(p) / 1e6
+          print(p, n, "frames", round(mb, 2), "MB")
+          assert n <= 250 and mb <= 8, "over the 250-frame / 8 MB limit"
+          PY
+
+      - name: Commit
+        run: |
+          D="${{ steps.build.outputs.day }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "media/special-$D.gif" "media/special-$D-still.png"
+          if git diff --staged --quiet; then echo "no changes"; exit 0; fi
+          git commit -m "media special-$D.gif (special-gif action)"
+          git pull --rebase origin main
+          git push origin HEAD:main

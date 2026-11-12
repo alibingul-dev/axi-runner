@@ -1,0 +1,30 @@
+name: linkedin-auto-publish
+# Ali, 25 Oct 2026 14:59: "Hepsi claude a geri gelsin. One time joblar ile yöneteceğim."
+# Scheduled runs removed; publishing is done by Claude one-time jobs in the chat.
+# Manual dispatch kept as an emergency fallback (dry=0 publishes).
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      dry:
+        description: "1 = sadece kontrol, yayın yok"
+        default: "1"
+concurrency:
+  group: auto-publish
+  cancel-in-progress: false
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Call Render auto-publisher
+        env:
+          KEY: ${{ secrets.PUBLISH_KEY }}
+          DRY: ${{ github.event.inputs.dry }}
+        run: |
+          if [ -z "$KEY" ]; then echo "PUBLISH_KEY yok"; exit 0; fi
+          q=""; [ "$DRY" = "1" ] && q="?dry=1"
+          curl -sS --fail-with-body --retry 6 --retry-delay 20 --retry-all-errors --max-time 150 \
+            -X POST -H "X-Publish-Key: $KEY" "https://axi-epias-mcp.onrender.com/publish/auto$q"

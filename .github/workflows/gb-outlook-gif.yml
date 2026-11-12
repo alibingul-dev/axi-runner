@@ -1,0 +1,61 @@
+name: gb-outlook-gif
+
+# Builds media/gb-outlook-<D>.gif (GB post2 day-ahead wind outlook GIF) every time the AI Wind Analyst
+# saves a gb_post2 draft (one build per attempt). Re-pulls the exact Elexon WINDFOR run the draft cites.
+# Always writes media/gb-outlook-<D>.json; on any failure its "gif" field reads "NONE <reason>" and the post
+# goes out text-only (Ali, 26 Oct 2026: the GIF never delays or blocks the post).
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      day:
+        description: "GB day the outlook covers (YYYY-MM-DD); empty = latest gb_post2 draft"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gb-outlook-gif
+  cancel-in-progress: true
+
+jobs:
+  gif:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq fonts-inter
+          pip install -q matplotlib numpy pillow
+          rm -rf ~/.cache/matplotlib
+
+      - name: Build
+        id: build
+        run: |
+          D="${{ github.event.inputs.day }}"
+          if [ -z "$D" ]; then D=$(ls drafts | grep -E '^[0-9-]{10}-gb_post2\.md$' | sort | tail -1 | cut -c1-10); fi
+          echo "day=$D" >> "$GITHUB_OUTPUT"
+          python scripts/gb_outlook_from_draft.py "drafts/$D-gb_post2.md"
+
+      - name: Commit
+        run: |
+          D="${{ steps.build.outputs.day }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add media/gb-outlook-$D.json gboutlook/$D 2>/dev/null || true
+          git add media/gb-outlook-$D.gif media/gb-outlook-${D}_p1.png media/gb-outlook-${D}_p2.png 2>/dev/null || true
+          if git diff --staged --quiet; then echo "no changes"; exit 0; fi
+          A=$(python -c "import json;print(json.load(open('media/gb-outlook-$D.json'))['attempt'])")
+          git commit -m "media gb-outlook-$D.gif attempt $A (gb-outlook-gif action)"
+          for i in 1 2 3 4; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done

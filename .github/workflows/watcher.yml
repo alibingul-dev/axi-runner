@@ -1,0 +1,27 @@
+name: watcher
+# Polls the private data repo and dispatches the workflows its pushes used to trigger.
+# One run lives ~5h40m, then dispatches its successor; the hourly cron is the safety net.
+on:
+  push:
+    branches: [main]
+    paths: ["watcher/**", ".github/workflows/watcher.yml"]
+  schedule:
+    - cron: "23 * * * *"
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "unused"
+        default: ""
+concurrency:
+  group: watcher
+  cancel-in-progress: false
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: Watch axi-epias-data
+        env:
+          PAT: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: python3 -u watcher/watch.py

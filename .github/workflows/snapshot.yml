@@ -1,0 +1,53 @@
+name: epias-forecast-snapshot
+
+on:
+  schedule:
+    - cron: "0 6 * * *"    # 09:00 Europe/Istanbul — GitHub cron runs late, so three attempts; a capture before 12:30 is never overwritten
+    - cron: "0 7 * * *"    # 10:00
+    - cron: "45 8 * * *"   # 11:45
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install eptr2 pandas
+
+      - name: Run snapshot
+        env:
+          EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+          EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+        run: python scripts/snapshot.py
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add snapshots/
+          if git diff --staged --quiet; then
+            echo "no changes"
+          else
+            git commit -m "snapshot $(date -u +%Y-%m-%d)"
+            git push
+          fi

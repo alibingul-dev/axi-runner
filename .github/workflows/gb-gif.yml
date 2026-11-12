@@ -1,0 +1,83 @@
+name: gb-week-gif
+
+# Builds media/gb-<END>.gif after export_gb_chart_data writes gbchart/<date>/halfhourly.csv.
+# END = the latest gbchart day; the 7-day window plus the -7 comparison day must all exist.
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      end_date:
+        description: "GB day the GIF ends on (YYYY-MM-DD); empty = latest gbchart day"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: gb-gif
+  cancel-in-progress: true
+
+jobs:
+  gif:
+    runs-on: ubuntu-latest
+    env:
+      SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq fonts-inter
+          pip install matplotlib numpy pillow
+          rm -rf ~/.cache/matplotlib
+
+      - name: Wait for the export to finish
+        if: inputs.via == 'push'
+        run: sleep 60 && git pull --ff-only origin main
+
+      - name: Build
+        id: build
+        run: |
+          END="${{ github.event.inputs.end_date }}"
+          if [ -z "$END" ]; then END=$(ls gbchart | sort | tail -1); fi
+          echo "end=$END" >> "$GITHUB_OUTPUT"
+          mkdir -p media
+          python scripts/make_gb_week_gif.py gbchart "$END" "media/gb-$END.gif"
+          rm -f "media/gb-${END}"_*.png
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "media/gb-${{ steps.build.outputs.end }}.gif"
+          if git diff --staged --quiet; then echo "no changes"; exit 0; fi
+          git commit -m "media gb-${{ steps.build.outputs.end }}.gif (gb-week-gif action)"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      # Copies the GIF to the public site as a small MP4 + poster (scripts/site_media.py).
+      # Skipped until the SITE_TOKEN secret exists; never fails the GIF job.
+      - name: Publish to site
+        if: env.SITE_TOKEN != ''
+        continue-on-error: true
+        run: |
+          { timeout 180 sudo apt-get install -y -qq --no-install-recommends ffmpeg || { curl -sSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ -C /tmp && sudo cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/; }; }
+          SITE="$RUNNER_TEMP/site"
+          git clone --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$SITE"
+          python scripts/site_media.py "media/gb-${{ steps.build.outputs.end }}.gif" "$SITE"
+          cd "$SITE"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add media
+          if git diff --staged --quiet; then echo "site unchanged"; exit 0; fi
+          git commit -m "media: gb clip from axi-epias-data"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done

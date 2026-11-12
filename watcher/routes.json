@@ -1,0 +1,42 @@
+{
+ "gb-gif.yml": [
+  "gbchart/**/halfhourly.csv",
+  "scripts/make_gb_week_gif.py",
+  ".github/workflows/gb-gif.yml"
+ ],
+ "gb-outlook-gif.yml": [
+  "drafts/*-gb_post2.md",
+  "scripts/make_gb_outlook_gif.py",
+  "scripts/gb_outlook_from_draft.py",
+  ".github/workflows/gb-outlook-gif.yml"
+ ],
+ "news-gif.yml": [
+  "newsdata/**/gif_request.txt"
+ ],
+ "pro-bundle.yml": [
+  "pro/**",
+  "published.json",
+  "scripts/build_pro_bundle.py",
+  ".github/workflows/pro-bundle.yml"
+ ],
+ "site-feed.yml": [
+  "published.json",
+  "site/post2/*.json",
+  "drafts/**",
+  "media/*.gif",
+  "gbchart/**/halfhourly.csv",
+  "newsdata/**/signals.json",
+  "scripts/build_site_feed.py",
+  "scripts/site_media.py",
+  ".github/workflows/site-feed.yml"
+ ],
+ "special-gif.yml": [
+  "specialdata/**/gif_request.txt"
+ ],
+ "tr-gif.yml": [
+  "chartdata/**/gif_request.txt"
+ ],
+ "tr-outlook-gif.yml": [
+  "outlookchart/**/gif_request.txt"
+ ]
+}

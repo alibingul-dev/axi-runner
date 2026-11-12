@@ -1,0 +1,93 @@
+name: tr-outlook-gif
+
+# Builds media/tr-outlook-<D>.gif (TR post2 day-ahead outlook GIF) after
+# export_outlook_data(D) writes outlookchart/<D>/gif_request.txt as its last file.
+# Needs outlookchart/<D>/brief.json (net_load_brief with include_hourly).
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      day:
+        description: "TR day the outlook covers (YYYY-MM-DD); empty = latest gif_request"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tr-outlook-gif
+  cancel-in-progress: true
+
+jobs:
+  gif:
+    runs-on: ubuntu-latest
+    env:
+      SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq fonts-inter
+          pip install matplotlib numpy pillow
+          rm -rf ~/.cache/matplotlib
+
+      - name: Build
+        id: build
+        run: |
+          D="${{ github.event.inputs.day }}"
+          if [ -z "$D" ]; then
+            D=$(git log -1 --format= --name-only -- 'outlookchart/*/gif_request.txt' | head -1 | cut -d/ -f2)
+          fi
+          echo "day=$D" >> "$GITHUB_OUTPUT"
+          test -f "outlookchart/$D/brief.json" || { echo "missing outlookchart/$D/brief.json"; exit 1; }
+          mkdir -p media
+          python scripts/make_outlook_gif.py "outlookchart/$D/brief.json" "media/tr-outlook-$D.gif"
+          GIF_LANG=tr python scripts/make_outlook_gif.py "outlookchart/$D/brief.json" "media/tr-outlook-$D-tr.gif"
+          python - "$D" <<'PY'
+          import os, sys
+          from PIL import Image
+          for p in ("media/tr-outlook-%s.gif" % sys.argv[1], "media/tr-outlook-%s-tr.gif" % sys.argv[1]):
+              im = Image.open(p); n = im.n_frames; mb = os.path.getsize(p) / 1e6
+              print(p, n, "frames", round(mb, 2), "MB")
+              assert n <= 250 and mb <= 8, "over the 250-frame / 8 MB limit"
+          PY
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "media/tr-outlook-${{ steps.build.outputs.day }}.gif" "media/tr-outlook-${{ steps.build.outputs.day }}-tr.gif"
+          if git diff --staged --quiet; then echo "no changes"; exit 0; fi
+          git commit -m "media tr-outlook-${{ steps.build.outputs.day }}.gif (tr-outlook-gif action)"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      # Copies the GIF to the public site as a small MP4 + poster (scripts/site_media.py).
+      # Skipped until the SITE_TOKEN secret exists; never fails the GIF job.
+      - name: Publish to site
+        if: env.SITE_TOKEN != ''
+        continue-on-error: true
+        run: |
+          { timeout 180 sudo apt-get install -y -qq --no-install-recommends ffmpeg || { curl -sSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ -C /tmp && sudo cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/; }; }
+          SITE="$RUNNER_TEMP/site"
+          git clone --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$SITE"
+          python scripts/site_media.py "media/tr-outlook-${{ steps.build.outputs.day }}.gif" "$SITE"
+          python scripts/site_media.py "media/tr-outlook-${{ steps.build.outputs.day }}-tr.gif" "$SITE"
+          cd "$SITE"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add media
+          if git diff --staged --quiet; then echo "site unchanged"; exit 0; fi
+          git commit -m "media: tr-outlook clip from axi-epias-data"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done

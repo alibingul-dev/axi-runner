@@ -1,0 +1,96 @@
+name: pro-bundle
+
+# Encrypts the full history for Pro codes and pushes power-analytics/pro.bundle.json.
+# Runs daily (refreshes BESS prices from EPİAŞ, rotates the content key so removed or expired codes stop working) and whenever the inputs change.
+on:
+  schedule:
+    - cron: "17 0 * * *"
+    - cron: "15 11 * * *"   # 14:15 Europe/Istanbul: score tomorrow's forecast as soon as EPİAŞ publishes tomorrow's PTF (~14:00)
+    - cron: "0 12 * * *"    # 15:00 Europe/Istanbul: fallback (GitHub cron runs late); both runs also fetch T's supply/demand curves (why-the-miss stage a)
+    - cron: "40 13 * * *"   # 16:40 Europe/Istanbul: KGÜP v1 for tomorrow is out (EPİAŞ publishes it at ~16:00): why-the-miss stage b
+    - cron: "10 15 * * *"   # 18:10 Europe/Istanbul: stage b fallback
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      tape_verify:
+        description: "1 = re-fetch the newest GİP prop tape day and compare (writes nothing)"
+        required: false
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pro-bundle
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -q cryptography eptr2 pandas
+      - name: Refresh BESS prices (daily run only)
+        if: inputs.via != 'push'
+        env:
+          EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+          EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+        run: |
+          python scripts/bess_data.py
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pro/bess.json
+          if ! git diff --staged --quiet; then git commit -q -m "pro: BESS prices $(date -u +%Y-%m-%d)"; for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done; fi
+      - name: Daily Price Forecast backtest (daily run only)
+        if: inputs.via != 'push'
+        env:
+          EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+          EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+          DPF_SD_SECONDS: "600"   # why-the-miss stage a: tomorrow's curves first, then its D-7 reference
+          DPF_SD_DAYS: "2"
+        run: |
+          pip install -q numpy
+          python scripts/dpf_build.py --fetch
+          python scripts/dpf_export.py
+          git add pro/dpf.json dpf/
+          if ! git diff --staged --quiet; then git commit -q -m "pro: daily price forecast backtest $(date -u +%Y-%m-%d)"; for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done; fi
+      - name: GİP Prop Bot backtest tape (daily run only)
+        if: inputs.via != 'push'
+        continue-on-error: true
+        env:
+          EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+          EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+          TAPE_VERIFY: ${{ github.event.inputs.tape_verify }}
+        run: |
+          if [ "$TAPE_VERIFY" = "1" ]; then python scripts/gip_tape.py --verify; fi
+          python scripts/gip_tape.py
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pro/products/pefb3f7bd.bt
+          if ! git diff --staged --quiet; then git commit -q -m "pro: GİP prop backtest tape $(date -u +%Y-%m-%d)"; for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done; fi
+      - name: Clone site
+        run: git clone --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$RUNNER_TEMP/site"
+      - name: Build bundle
+        run: python scripts/build_pro_bundle.py . "$RUNNER_TEMP/site"
+      - name: Push to site
+        run: |
+          cd "$RUNNER_TEMP/site"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pro.bundle.json max.bundle.json ultra.bundle.json custom.bundle.json admin.bundle.json
+          git add -A x 2>/dev/null || true
+          if git diff --staged --quiet; then echo "bundle unchanged"; exit 0; fi
+          git commit -q -m "pro: encrypted tier bundles"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done

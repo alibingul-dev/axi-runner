@@ -1,0 +1,74 @@
+name: site-feed
+
+# Builds power-analytics/feed.json (post text + native chart data + web clips) after any
+# published post, draft, GIF or chart input changes. The site renders the posts itself.
+# With SITE_TOKEN: pushes feed.json and media/ to power-analytics.
+# Without it: commits the feed to sitefeed/feed.json here so it can be copied by hand.
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: site-feed
+  cancel-in-progress: false
+
+jobs:
+  feed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ffmpeg
+        run: timeout 120 sudo apt-get update -qq || true; { timeout 180 sudo apt-get install -y -qq --no-install-recommends ffmpeg || { curl -sSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ -C /tmp && sudo cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/; }; }
+
+      - name: Clone site
+        run: |
+          SITE="$RUNNER_TEMP/site"
+          if [ -n "$SITE_TOKEN" ]; then
+            git clone --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$SITE"
+          else
+            git clone --depth 1 "https://github.com/alibingul-dev/power-analytics.git" "$SITE"
+          fi
+
+      - name: Build feed
+        run: python scripts/build_site_feed.py . "$RUNNER_TEMP/site" 15
+
+      - name: Push to site
+        if: env.SITE_TOKEN != ''
+        run: |
+          cd "$RUNNER_TEMP/site"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add feed.json media
+          if git diff --staged --quiet; then echo "site unchanged"; exit 0; fi
+          git commit -q -m "feed: posts from axi-epias-data"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done
+
+      - name: Keep feed here (no SITE_TOKEN)
+        if: env.SITE_TOKEN == ''
+        run: |
+          mkdir -p sitefeed && cp "$RUNNER_TEMP/site/feed.json" sitefeed/feed.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add sitefeed/feed.json
+          if git diff --staged --quiet; then echo "feed unchanged"; exit 0; fi
+          git commit -q -m "sitefeed: feed.json (site-feed action, no SITE_TOKEN)"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done

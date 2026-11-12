@@ -1,0 +1,85 @@
+name: dpf-live
+
+# Tomorrow's day-ahead price forecast, published before 11:00 Europe/Istanbul.
+# Triggered by Ali's 10:30 scheduled task (GitHub cron is not reliable enough for a fixed time); the cron is a fallback.
+# Steps: archive today's EPİAŞ load plan + wind forecast for D+1 (kept only if before 12:30), run the engine, rebuild the Pro bundles.
+on:
+  schedule:
+    - cron: "20 7 * * *"   # 10:20 Europe/Istanbul (fallback 1)
+    - cron: "45 7 * * *"   # 10:45 Europe/Istanbul (fallback 2); the job is idempotent, a pre-12:30 archive is never overwritten
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pro-bundle
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+      EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+      EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -q cryptography eptr2 pandas numpy
+      - name: Archive today's inputs (wait for the TEİAŞ load plan, up to 13:50 Europe/Istanbul)
+        run: |
+          for i in $(seq 1 18); do
+            python scripts/snapshot.py
+            ok=$(python3 - <<'PY'
+          import json,datetime,os
+          tz=datetime.timezone(datetime.timedelta(hours=3)); today=datetime.datetime.now(tz).date().isoformat()
+          p=f"snapshots/{today}.json"
+          if not os.path.exists(p): print(0); raise SystemExit
+          s=json.load(open(p)); d={x["key"]:x["row_count"] for x in s["series"] if x["lag_days"]==-1}
+          print(1 if d.get("load-plan",0)==24 and d.get("wind-forecast",0)>=90 else 0)
+          PY
+          )
+            now=$(TZ=Europe/Istanbul date +%H%M)
+            if [ "$ok" = "1" ]; then echo "inputs complete at $now"; break; fi
+            if [ "$now" -ge 1350 ]; then echo "load plan still missing at $now, giving up"; break; fi
+            echo "load plan not yet published ($now), retry in 10 min"; sleep 600
+          done
+      - name: Build forecast
+        run: |
+          python scripts/dpf_build.py
+          python scripts/dpf_export.py
+      - name: Commit data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add snapshots/ pro/dpf.json dpf/
+          if ! git diff --staged --quiet; then git commit -q -m "dpf live $(date -u +%Y-%m-%dT%H:%MZ)"; for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done; fi
+      - name: Clone site
+        run: git clone --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$RUNNER_TEMP/site"
+      - name: Build bundle
+        run: python scripts/build_pro_bundle.py . "$RUNNER_TEMP/site"
+      - name: Push to site
+        run: |
+          cd "$RUNNER_TEMP/site"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add pro.bundle.json max.bundle.json ultra.bundle.json custom.bundle.json
+          git add -A x 2>/dev/null || true
+          if git diff --staged --quiet; then echo "bundle unchanged"; exit 0; fi
+          git commit -q -m "pro: live price forecast"
+          git stash -q --include-untracked || true
+          pushed=0
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && pushed=1 && break; sleep 5; done
+          [ "$pushed" = "1" ] || { echo "::error::push to site failed"; exit 1; }

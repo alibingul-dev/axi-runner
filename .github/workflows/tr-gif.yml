@@ -1,0 +1,110 @@
+name: tr-day-gif
+
+# Builds media/tr-<D>.gif (TR post1 day-end GIF, GIF_MODE=actual) after
+# export_chart_data(D, gif="actual") writes chartdata/<D>/gif_request.txt as its last file.
+# Needs chartdata/<D>, <D-1>, <D-7> with ptf.csv, rt_gen.csv, unlicensed.csv and <D>/supply_demand.csv.
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+      day:
+        description: "TR day (YYYY-MM-DD); empty = latest gif_request"
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tr-gif
+  cancel-in-progress: true
+
+jobs:
+  gif:
+    runs-on: ubuntu-latest
+    env:
+      SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq fonts-inter
+          pip install matplotlib numpy pillow
+          rm -rf ~/.cache/matplotlib
+
+      - name: Wait for the export to finish
+        if: inputs.via == 'push'
+        run: sleep 30 && git pull --ff-only origin main
+
+      - name: Build
+        id: build
+        run: |
+          D="${{ github.event.inputs.day }}"
+          if [ -z "$D" ]; then
+            D=$(git log -1 --format= --name-only -- 'chartdata/*/gif_request.txt' | head -1 | cut -d/ -f2)
+          fi
+          echo "day=$D" >> "$GITHUB_OUTPUT"
+          UNL="$RUNNER_TEMP/unlicensed.csv"
+          echo "date,hour,unlicensed" > "$UNL"
+          for k in 7 1 0; do
+            d=$(date -d "$D -$k day" +%F)
+            test -f "chartdata/$d/unlicensed.csv" || { echo "missing chartdata/$d/unlicensed.csv"; exit 1; }
+            tail -n +2 "chartdata/$d/unlicensed.csv" >> "$UNL"
+          done
+          mkdir -p media
+          GIF_MODE=actual python scripts/make_daily_gif.py "$D" "media/tr-$D.gif" chartdata "$UNL"
+          python - "$D" <<'PY'
+          import os, sys
+          from PIL import Image
+          p = "media/tr-%s.gif" % sys.argv[1]
+          im = Image.open(p); n = im.n_frames; mb = os.path.getsize(p) / 1e6
+          print(p, n, "frames", round(mb, 2), "MB")
+          assert n <= 250 and mb <= 8, "over the 250-frame / 8 MB limit"
+          PY
+
+      # Turkish copy for the site's TR switch only (never posted to LinkedIn); a failure never blocks the English GIF.
+      - name: Build Turkish copy
+        continue-on-error: true
+        run: |
+          D="${{ steps.build.outputs.day }}"
+          GIF_MODE=actual GIF_LANG=tr python scripts/make_daily_gif.py "$D" "media/tr-$D-tr.gif" chartdata "$RUNNER_TEMP/unlicensed.csv"
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "media/tr-${{ steps.build.outputs.day }}.gif"
+          git add "media/tr-${{ steps.build.outputs.day }}-tr.gif" 2>/dev/null || true
+          if git diff --staged --quiet; then echo "no changes"; exit 0; fi
+          git commit -m "media tr-${{ steps.build.outputs.day }}.gif (tr-day-gif action)"
+          git pull --rebase origin main
+          git push origin HEAD:main
+
+      # Copies the GIF to the public site as a small MP4 + poster (scripts/site_media.py).
+      # Skipped until the SITE_TOKEN secret exists; never fails the GIF job.
+      - name: Publish to site
+        if: env.SITE_TOKEN != ''
+        continue-on-error: true
+        run: |
+          { timeout 180 sudo apt-get install -y -qq --no-install-recommends ffmpeg || { curl -sSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ -C /tmp && sudo cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/; }; }
+          SITE="$RUNNER_TEMP/site"
+          git clone --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$SITE"
+          python scripts/site_media.py "media/tr-${{ steps.build.outputs.day }}.gif" "$SITE"
+          if [ -f "media/tr-${{ steps.build.outputs.day }}-tr.gif" ]; then python scripts/site_media.py "media/tr-${{ steps.build.outputs.day }}-tr.gif" "$SITE"; fi
+          cd "$SITE"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add media
+          if git diff --staged --quiet; then echo "site unchanged"; exit 0; fi
+          git commit -m "media: tr clip from axi-epias-data"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done

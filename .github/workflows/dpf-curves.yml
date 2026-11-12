@@ -1,0 +1,62 @@
+name: dpf-curves
+
+# Archives EPİAŞ day-ahead supply/demand curves (dpf/curves/<day>.json) for the Daily Price Forecast merit-order feature.
+# Separate from pro-bundle because EPİAŞ is slow on this endpoint; capped calls per run, backfill spreads over nights.
+on:
+  schedule:
+    - cron: "30 22 * * *"   # 01:30 Europe/Istanbul, before the 03:17 pro-bundle build
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dpf-curves
+  cancel-in-progress: false
+
+jobs:
+  curves:
+    runs-on: ubuntu-latest
+    timeout-minutes: 58
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: pip install -q eptr2 pandas numpy
+      - name: Backfill why-the-miss inputs (supply and demand curves apart, KGÜP v1)
+        # first: newest scored days and their D-7 references (~7 s per EPİAŞ call, 24 calls per day)
+        timeout-minutes: 33
+        continue-on-error: true
+        env:
+          EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+          EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+          DPF_SD_CALLS: "480"
+          DPF_SD_SECONDS: "1800"
+          DPF_SD_DAYS: "5"
+        run: python scripts/dpf_build.py --stages
+      - name: Fetch curves
+        timeout-minutes: 20
+        continue-on-error: true
+        env:
+          EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+          EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+          DPF_CURVE_CALLS: "480"
+        run: python scripts/dpf_build.py --curves
+      - name: Commit
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dpf/curves dpf/curves_sd dpf/kgup
+          if git diff --staged --quiet; then echo "no new curves"; exit 0; fi
+          git commit -q -m "dpf: supply/demand curves $(date -u +%Y-%m-%d)"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done

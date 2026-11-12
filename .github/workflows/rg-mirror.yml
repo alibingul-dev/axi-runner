@@ -1,0 +1,42 @@
+name: rg-mirror
+# Copies Ali's Resmî Gazete reader output (public repo alibingul-dev/resmigazete, rg/<YYYYMMDD>.json)
+# into this repo as a compact index (scripts/rg_compact.py), because the scheduled news tasks can read
+# only axi-epias-data and a full file (100-300 KB) is too big for their context (21 Oct 2026).
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+  schedule:
+    - cron: "10 2-11 * * *"   # hourly 05:10–14:10 TR: GitHub fires the 04:23 reader 3–9 h late (21 Oct 06:06Z, 20 Oct 10:49Z), and scheduled runs here can be skipped
+    - cron: "40 4 * * *"      # 07:40 TR, extra try before the 08:15 analyst
+permissions:
+  contents: write
+concurrency:
+  group: rg-mirror
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - name: Compact index of the last 3 days (energy items only, ~5 KB per day)
+        run: |
+          mkdir -p rg
+          for k in 0 1 2; do
+            d=$(TZ=Europe/Istanbul date -d "-$k day" +%Y%m%d)
+            curl -sfL "https://raw.githubusercontent.com/alibingul-dev/resmigazete/main/rg/$d.json" -o "/tmp/$d.json" \
+              && python3 scripts/rg_compact.py "/tmp/$d.json" "rg/$d.json" || echo "missing $d"
+          done
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add rg
+          git diff --staged --quiet && { echo "no changes"; exit 0; }
+          git commit -m "rg mirror $(TZ=Europe/Istanbul date +%F)"
+          git pull --rebase origin main
+          git push origin HEAD:main
