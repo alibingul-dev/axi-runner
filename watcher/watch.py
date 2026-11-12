@@ -81,9 +81,9 @@ def new_commits(last, head):
 def dispatch(wf):
     try:
         api("POST", f"/repos/{SELF}/actions/workflows/{wf}/dispatches", {"ref": "main", "inputs": {"via": "push"}})
-        print("  dispatched", wf)
+        print("  dispatched", wf); return True
     except urllib.error.HTTPError as e:
-        print("  dispatch failed", wf, e.code)
+        print("  dispatch failed", wf, e.code); return False
 
 
 def main():
@@ -91,8 +91,11 @@ def main():
     last, blob = state_get()
     saved_at = time.time()
     print("start, last =", (last or "none")[:7])
+    retry = set()  # workflows whose dispatch failed; retried every poll until accepted
     while time.time() < end:
         try:
+            if retry:
+                retry = {wf for wf in sorted(retry) if not dispatch(wf)}
             head = api("GET", f"/repos/{DATA}/commits/main")["sha"]
             if head != last:
                 files = set(); n = 0
@@ -102,7 +105,7 @@ def main():
                     files |= {f["filename"] for f in api("GET", f"/repos/{DATA}/commits/{c['sha']}").get("files", [])}
                 hit = sorted(wf for wf, rxs in RX.items() if any(r.match(f) for r in rxs for f in files))
                 print(time.strftime("%H:%MZ", time.gmtime()), head[:7], f"{n} human commits, {len(files)} files ->", hit or "-")
-                for wf in hit: dispatch(wf)
+                retry |= {wf for wf in hit if not dispatch(wf)}
                 last = head
             if time.time() - saved_at > 3600:
                 blob = state_put(last, blob); saved_at = time.time()
