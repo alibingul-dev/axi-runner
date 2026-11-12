@@ -78,9 +78,14 @@ def new_commits(last, head):
     return list(reversed(api("GET", f"/repos/{DATA}/commits?sha=main&per_page=100&since={since}")))
 
 
-def dispatch(wf):
+# Clock-driven dispatches (UTC "HH:MM", workflow, inputs): GitHub cron runs late, the watcher does not.
+TIMED = [("09:31", "forecast-card.yml", {"mode": "make"}),   # 12:31 Istanbul, after the day-ahead gate
+         ("04:05", "forecast-card.yml", {"mode": "score"})]  # 07:05 Istanbul
+
+
+def dispatch(wf, inputs=None):
     try:
-        api("POST", f"/repos/{SELF}/actions/workflows/{wf}/dispatches", {"ref": "main", "inputs": {"via": "push"}})
+        api("POST", f"/repos/{SELF}/actions/workflows/{wf}/dispatches", {"ref": "main", "inputs": inputs or {"via": "push"}})
         print("  dispatched", wf); return True
     except urllib.error.HTTPError as e:
         print("  dispatch failed", wf, e.code); return False
@@ -92,8 +97,15 @@ def main():
     saved_at = time.time()
     print("start, last =", (last or "none")[:7])
     retry = set()  # workflows whose dispatch failed; retried every poll until accepted
+    fired = set()  # (day, HH:MM) of timed dispatches already sent by this run
     while time.time() < end:
         try:
+            now = time.gmtime()
+            hm, day = time.strftime("%H:%M", now), time.strftime("%Y-%m-%d", now)
+            for at, wf, inp in TIMED:
+                if at <= hm < at[:3] + "%02d" % (int(at[3:]) + 20) and (day, at) not in fired:
+                    if dispatch(wf, dict(inp, via="timer")):
+                        fired.add((day, at))
             if retry:
                 retry = {wf for wf in sorted(retry) if not dispatch(wf)}
             head = api("GET", f"/repos/{DATA}/commits/main")["sha"]

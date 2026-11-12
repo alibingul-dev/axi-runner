@@ -1,0 +1,70 @@
+name: forecast-card
+# Tahmin karnesi (Ali, 13 Nov 2026): price-free claims about tomorrow, made 12:30–12:59 Istanbul
+# (after the day-ahead gate, before the price), committed at once as the time record, scored the next morning.
+# Primary trigger: the watcher dispatches mode=make at 12:31 and mode=score at 07:05 Istanbul.
+# The crons are fallbacks; the script refuses to make a forecast outside 12:30–12:59 or twice.
+on:
+  schedule:
+    - cron: "38 9 * * *"   # 12:38 Istanbul (make, fallback)
+    - cron: "52 9 * * *"   # 12:52 Istanbul (make, fallback)
+    - cron: "20 4 * * *"   # 07:20 Istanbul (score, fallback)
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "make | score | site"
+        default: "make"
+      via:
+        description: "watcher"
+        default: ""
+permissions:
+  contents: write
+concurrency:
+  group: forecast-card
+  cancel-in-progress: false
+jobs:
+  card:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -q eptr2 pandas
+      - name: Run
+        env:
+          EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+          EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+          MODE: ${{ github.event.inputs.mode }}
+          CRON: ${{ github.event.schedule }}
+        run: |
+          M="$MODE"
+          if [ -z "$M" ]; then case "$CRON" in "20 4 * * *") M=score;; *) M=make;; esac; fi
+          echo "mode=$M"
+          if [ "$M" = "make" ] || [ "$M" = "score" ]; then python scripts/forecast_card.py "$M"; fi
+      - name: Commit record
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add forecast 2>/dev/null || true
+          if git diff --staged --quiet; then echo "no change"; exit 0; fi
+          git commit -q -m "forecast card $(TZ=Europe/Istanbul date +%Y-%m-%dT%H:%M)"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done
+      - name: Publish to site
+        if: env.SITE_TOKEN != ''
+        run: |
+          SITE="$RUNNER_TEMP/site"
+          git clone -q --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$SITE"
+          python scripts/forecast_card.py site "$SITE"
+          cd "$SITE"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add forecast-card.json
+          if git diff --staged --quiet; then echo "site unchanged"; exit 0; fi
+          git commit -q -m "forecast card"
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && break; sleep 5; done
