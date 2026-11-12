@@ -52,13 +52,16 @@ jobs:
           echo "end=$END" >> "$GITHUB_OUTPUT"
           mkdir -p media
           python scripts/make_gb_week_gif.py gbchart "$END" "media/gb-$END.gif"
-          rm -f "media/gb-${END}"_*.png
+          # Turkish copy for the site's TR switch (Ali, 13 Nov 2026); never blocks the English GIF
+          GIF_LANG=tr python scripts/make_gb_week_gif.py gbchart "$END" "media/gb-$END-tr.gif" || echo "::warning::TR GIF failed"
+          rm -f "media/gb-${END}"_*.png "media/gb-${END}-tr"_*.png
 
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "media/gb-${{ steps.build.outputs.end }}.gif"
+          git add "media/gb-${{ steps.build.outputs.end }}-tr.gif" 2>/dev/null || true
           if git diff --staged --quiet; then echo "no changes"; exit 0; fi
           git commit -m "media gb-${{ steps.build.outputs.end }}.gif (gb-week-gif action)"
           git pull --rebase origin main
@@ -74,6 +77,7 @@ jobs:
           SITE="$RUNNER_TEMP/site"
           git clone --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$SITE"
           python scripts/site_media.py "media/gb-${{ steps.build.outputs.end }}.gif" "$SITE"
+          if [ -f "media/gb-${{ steps.build.outputs.end }}-tr.gif" ]; then python scripts/site_media.py "media/gb-${{ steps.build.outputs.end }}-tr.gif" "$SITE"; fi
           cd "$SITE"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
