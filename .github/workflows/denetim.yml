@@ -27,3 +27,33 @@ jobs:
           TODOIST_TOKEN: ${{ secrets.TODOIST_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AUDIT_DAY: ${{ github.event.inputs.day }}
+      # Status sayfası (Ali, 15 Kas 2026): saatlik Bugünün Denetimcisi 10 Kas'ta kapandı;
+      # status/status.json artık günde bir, denetlenen günün 23:59 İstanbul hâliyle yazılır.
+      - name: Status sayfası (status.json)
+        if: always()
+        env:
+          SITE_TOKEN: ${{ secrets.SITE_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AUDIT_DAY: ${{ github.event.inputs.day }}
+        run: |
+          DAY="${AUDIT_DAY:-$(TZ=Europe/Istanbul date -d yesterday +%F)}"
+          W="$RUNNER_TEMP"
+          curl -fsSL https://raw.githubusercontent.com/alibingul-dev/power-analytics/main/feed.json \
+            | python3 -c "import sys,json;print(json.dumps([{k:x.get(k) for k in ('kind','analysis_date','at','post_id')} for x in json.load(sys.stdin)['items']]))" > "$W/pub.json"
+          SINCE=$(date -u -d "$DAY -7 days" +%FT00:00:00Z)
+          curl -fsSL -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/alibingul-dev/masterchef-2026/commits?path=data.json&per_page=100&since=$SINCE" > "$W/mc.json" || echo "[]" > "$W/mc.json"
+          python3 status/build_status.py "$W/pub.json" "$W/mc.json" "$W/status.json" "${DAY}T20:59:00Z"
+          if [ -z "$SITE_TOKEN" ]; then echo "::notice::SITE_TOKEN yok, status.json yayınlanmadı"; exit 0; fi
+          if ! git clone -q --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/alibingul-dev.github.io.git" "$W/site"; then
+            echo "::warning::SITE_TOKEN alibingul-dev.github.io'ya erişemiyor (token'a repo eklenmeli)"; exit 0; fi
+          cp "$W/status.json" "$W/site/status/status.json"
+          cd "$W/site"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add status/status.json
+          if git diff --staged --quiet; then echo "status unchanged"; exit 0; fi
+          git commit -q -m "status: daily $DAY"
+          pushed=0
+          for i in 1 2 3; do git pull --rebase -q origin main && git push -q origin HEAD:main && pushed=1 && break; sleep 5; done
+          [ "$pushed" = "1" ] || echo "::warning::status.json push başarısız (SITE_TOKEN'ın alibingul-dev.github.io yazma izni yok olabilir)"
