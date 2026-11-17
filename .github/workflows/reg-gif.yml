@@ -1,0 +1,71 @@
+name: reg-gif
+# Regulation Watch / Mevzuat Takibi GIF (17 Nov 2026). The scheduled analyst writes
+# regdata/<D>/reg.json in axi-epias-data, then creates kick-reg/<D>-<tag>.txt in THIS repo.
+# This job renders media/reg-<D>.gif and regdata/<D>/pages/p<n>.png (page images for the
+# Test Audience) with scripts/make_reg_gif.py and commits them to axi-epias-data.
+on:
+  push:
+    branches: [main]
+    paths: ["kick-reg/**"]
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "issue date YYYY-MM-DD (regdata/<day>/reg.json)"
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: reg-gif
+  cancel-in-progress: false
+jobs:
+  gif:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          path: runner
+      - name: Day
+        id: d
+        run: |
+          D="${{ github.event.inputs.day }}"
+          if [ -z "$D" ]; then
+            f=$(git -C runner diff --name-only HEAD~1 HEAD -- kick-reg/ | tail -1)
+            D=$(basename "$f" | cut -c1-10)
+          fi
+          echo "$D" | grep -Eq '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' || { echo "bad day '$D'"; exit 1; }
+          echo "day=$D" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 1
+          path: data
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -q pillow numpy
+      - name: Render
+        working-directory: data
+        run: |
+          D="${{ steps.d.outputs.day }}"
+          test -f "regdata/$D/reg.json" || { echo "missing regdata/$D/reg.json"; exit 1; }
+          REG_PREVIEW=1 python scripts/make_reg_gif.py "$D" "media/reg-$D.gif" regdata
+          mkdir -p "regdata/$D/pages"; rm -f "regdata/$D/pages/"*.png
+          for p in media/reg-$D_p*.png media/reg-"$D"_p*.png; do [ -f "$p" ] && mv "$p" "regdata/$D/pages/p${p##*_p}"; done
+          ls "regdata/$D/pages"
+      - name: Commit
+        working-directory: data
+        run: |
+          D="${{ steps.d.outputs.day }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "media/reg-$D.gif" "regdata/$D/pages"
+          if git diff --staged --quiet; then echo "no changes"; exit 0; fi
+          git commit -q -m "media reg-$D.gif + pages (reg-gif action)"
+          for i in 1 2 3 4 5; do
+            git pull --rebase -q origin main && git push -q origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
