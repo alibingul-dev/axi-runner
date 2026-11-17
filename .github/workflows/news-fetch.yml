@@ -5,6 +5,9 @@ name: news-fetch
 # fetches each page (scripts/news_fetch.py in the data repo) and commits
 # newsfetch/out/<name>.json. Only request files without an out file are processed.
 on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/news-fetch.yml"]
   workflow_dispatch:
     inputs:
       via:
