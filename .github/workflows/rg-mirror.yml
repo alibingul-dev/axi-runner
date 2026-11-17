@@ -2,12 +2,17 @@ name: rg-mirror
 # Copies Ali's Resmî Gazete reader output (public repo alibingul-dev/resmigazete, rg/<YYYYMMDD>.json)
 # into this repo as a compact index (scripts/rg_compact.py), because the scheduled news tasks can read
 # only axi-epias-data and a full file (100-300 KB) is too big for their context (21 Oct 2026).
+# rgfull/<YYYYMMDD>.json (17 Nov 2026): energy items only, WITH their full text (OCR included), for
+# the Regulation Watch analyst, which must take every figure from the official text. Last 21 days.
 on:
   workflow_dispatch:
     inputs:
       via:
         description: "watcher"
         default: ""
+  push:
+    branches: [main]
+    paths: [".github/workflows/rg-mirror.yml"]
   schedule:
     - cron: "10 2-11 * * *"   # hourly 05:10–14:10 TR: GitHub fires the 04:23 reader 3–9 h late (21 Oct 06:06Z, 20 Oct 10:49Z), and scheduled runs here can be skipped
     - cron: "40 4 * * *"      # 07:40 TR, extra try before the 08:15 analyst
@@ -31,11 +36,27 @@ jobs:
             curl -sfL "https://raw.githubusercontent.com/alibingul-dev/resmigazete/main/rg/$d.json" -o "/tmp/$d.json" \
               && python3 scripts/rg_compact.py "/tmp/$d.json" "rg/$d.json" || echo "missing $d"
           done
+      - name: Full text of energy items, last 21 days (rgfull/)
+        run: |
+          mkdir -p rgfull
+          for k in $(seq 0 20); do
+            d=$(TZ=Europe/Istanbul date -d "-$k day" +%Y%m%d)
+            [ -f "/tmp/$d.json" ] || curl -sfL "https://raw.githubusercontent.com/alibingul-dev/resmigazete/main/rg/$d.json" -o "/tmp/$d.json" || { echo "missing $d"; continue; }
+            python3 - "/tmp/$d.json" "rgfull/$d.json" <<'PY'
+          import json, sys
+          j = json.load(open(sys.argv[1], encoding="utf-8"))
+          keep = ("n", "official_url", "issuer", "title", "method", "text")
+          items = [{k: it.get(k) for k in keep} for it in j.get("items", []) if str(it.get("energy")).lower() == "true"]
+          out = {"date": j.get("date"), "issue": j.get("issue"), "energy_count": len(items), "items": items}
+          json.dump(out, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+          print(sys.argv[2], len(items), "energy items")
+          PY
+          done
       - name: Commit
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add rg
+          git add rg rgfull
           git diff --staged --quiet && { echo "no changes"; exit 0; }
           git commit -m "rg mirror $(TZ=Europe/Istanbul date +%F)"
           git pull --rebase origin main
