@@ -1,15 +1,13 @@
 name: news-fetch
 # TR News page fetcher (17 Nov 2026): scheduled Claude runs have no WebFetch and
 # WebSearch returns titles+URLs only. The analyst/reviewer write URLs to
-# axi-epias-data newsfetch/req/<name>.txt; the watcher dispatches this job, which
-# fetches each page (scripts/news_fetch.py in the data repo) and commits
-# newsfetch/out/<name>.json. Only request files without an out file are processed.
-# The 5-minute cron is a safety net: an idle run exits in seconds ("nothing to fetch").
-# A push to this file also runs it (manual kick).
+# axi-epias-data newsfetch/req/<name>.txt, then write kick/<name>.txt in THIS repo
+# (push → runs at once). The watcher route and the 5-minute cron are safety nets.
+# Only request files without an out file are processed.
 on:
   push:
     branches: [main]
-    paths: [".github/workflows/news-fetch.yml"]
+    paths: [".github/workflows/news-fetch.yml", "kick/**"]
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
