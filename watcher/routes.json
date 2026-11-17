@@ -10,6 +10,9 @@
   "scripts/gb_outlook_from_draft.py",
   ".github/workflows/gb-outlook-gif.yml"
  ],
+ "news-fetch.yml": [
+  "newsfetch/req/**"
+ ],
  "news-gif.yml": [
   "newsdata/**/gif_request.txt"
  ],

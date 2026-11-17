@@ -1,0 +1,52 @@
+name: news-fetch
+# TR News page fetcher (17 Nov 2026): scheduled Claude runs have no WebFetch and
+# WebSearch returns titles+URLs only. The analyst/reviewer write URLs to
+# axi-epias-data newsfetch/req/<name>.txt; the watcher dispatches this job, which
+# fetches each page (scripts/news_fetch.py in the data repo) and commits
+# newsfetch/out/<name>.json. Only request files without an out file are processed.
+on:
+  workflow_dispatch:
+    inputs:
+      via:
+        description: "watcher"
+        default: ""
+permissions:
+  contents: read
+concurrency:
+  group: news-fetch
+  cancel-in-progress: false
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 1
+      - name: Fetch pages
+        id: f
+        run: |
+          todo=""
+          for r in newsfetch/req/*.txt; do
+            [ -f "$r" ] || continue
+            n=$(basename "$r" .txt)
+            [ -f "newsfetch/out/$n.json" ] || todo="$todo $r"
+          done
+          echo "todo=$todo" >> "$GITHUB_OUTPUT"
+          [ -z "$todo" ] && { echo "nothing to fetch"; exit 0; }
+          python3 scripts/news_fetch.py $todo
+      - name: Commit
+        if: steps.f.outputs.todo != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add newsfetch/out
+          if git diff --staged --quiet; then echo "no changes"; exit 0; fi
+          git commit -m "news-fetch:${{ steps.f.outputs.todo }}"
+          for i in 1 2 3 4 5; do
+            git pull --rebase -q origin main && git push -q origin HEAD:main && exit 0
+            sleep 5
+          done
+          exit 1
