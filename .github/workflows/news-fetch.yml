@@ -5,6 +5,7 @@ name: news-fetch
 # fetches each page (scripts/news_fetch.py in the data repo) and commits
 # newsfetch/out/<name>.json. Only request files without an out file are processed.
 # The 5-minute cron is a safety net: an idle run exits in seconds ("nothing to fetch").
+# A push to this file also runs it (manual kick).
 on:
   push:
     branches: [main]
