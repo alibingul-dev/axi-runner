@@ -37,7 +37,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install ffmpeg
-        run: timeout 120 sudo apt-get update -qq || true; { timeout 180 sudo apt-get install -y -qq --no-install-recommends ffmpeg || { curl -sSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ -C /tmp && sudo cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/; }; }
+        run: timeout 120 sudo apt-get update -qq || true; bash scripts/install_ffmpeg.sh
 
       - name: Clone site
         run: |

@@ -96,7 +96,7 @@ jobs:
         if: env.SITE_TOKEN != ''
         continue-on-error: true
         run: |
-          { timeout 180 sudo apt-get install -y -qq --no-install-recommends ffmpeg || { curl -sSL https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz | tar -xJ -C /tmp && sudo cp /tmp/ffmpeg-*-static/ffmpeg /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/; }; }
+          bash scripts/install_ffmpeg.sh
           SITE="$RUNNER_TEMP/site"
           git clone --depth 1 "https://x-access-token:${SITE_TOKEN}@github.com/alibingul-dev/power-analytics.git" "$SITE"
           python scripts/site_media.py "media/tr-${{ steps.build.outputs.day }}.gif" "$SITE"
