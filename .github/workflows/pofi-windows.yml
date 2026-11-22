@@ -1,0 +1,147 @@
+name: pofi-windows
+# Pofi Windows build on the public runner (private pofi repo has no Actions budget).
+# Every 30 min: if pofi@v0.1 has a commit newer than the last pofi-releases release, build, sign and publish v0.1.<last+1>.
+# Release notes = commit subjects since the last released sha (Agent Resume's Pofi agent posts from them).
+# Needs secrets here: PRIVATE_REPO_TOKEN (read alibingul-dev/pofi), RELEASES_TOKEN (write pofi-releases), TAURI_SIGNING_PRIVATE_KEY.
+on:
+  schedule:
+    - cron: '7,37 * * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even if nothing new'
+        type: boolean
+        default: false
+concurrency:
+  group: pofi-windows
+  cancel-in-progress: false
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.d.outputs.build }}
+      version: ${{ steps.d.outputs.version }}
+      last: ${{ steps.d.outputs.last }}
+      head: ${{ steps.d.outputs.head }}
+    steps:
+      - id: d
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os, re, subprocess, urllib.request
+          def api(u):
+              r = urllib.request.Request(u, headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"], "Accept": "application/vnd.github+json"})
+              return json.load(urllib.request.urlopen(r, timeout=60))
+          rels = api("https://api.github.com/repos/alibingul-dev/pofi-releases/releases?per_page=30")
+          win = [r for r in rels if re.fullmatch(r"v0\.1\.\d+", r["tag_name"])]
+          n = max(int(r["tag_name"].split(".")[-1]) for r in win)
+          top = [r for r in win if r["tag_name"] == f"v0.1.{n}"][0]
+          m = re.search(r"\b([0-9a-f]{40})\b", top.get("body") or "")
+          last = m.group(1) if m else ""
+          head = api("https://api.github.com/repos/alibingul-dev/pofi/commits/v0.1")["sha"]
+          build = head != last or os.environ.get("FORCE") == "true"
+          print(f"build={'true' if build else 'false'}"); print(f"version=0.1.{n + 1}"); print(f"last={last}"); print(f"head={head}")
+          EOF
+          cat "$GITHUB_OUTPUT"
+
+  build:
+    needs: decide
+    if: needs.decide.outputs.build == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+      RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/pofi
+          ref: ${{ needs.decide.outputs.head }}
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          fetch-depth: 50
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Slice pose sheets into frames
+        run: |
+          pip install pillow numpy
+          bash art/build_assets.sh
+
+      - name: Stamp version (updater needs a rising number)
+        run: |
+          python - <<'EOF'
+          import json, os
+          p = "src-tauri/tauri.conf.json"; c = json.load(open(p, encoding="utf-8"))
+          c["version"] = os.environ["VERSION"]
+          if not os.environ.get("TAURI_SIGNING_PRIVATE_KEY"):
+              print("::warning::TAURI_SIGNING_PRIVATE_KEY yok - guncelleme dosyalari uretilmeyecek")
+              c["bundle"]["createUpdaterArtifacts"] = False
+          json.dump(c, open(p, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+          EOF
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install Tauri CLI
+        run: npm install
+
+      - name: Generate icons
+        run: npx tauri icon app-icon.svg
+
+      - name: Build
+        run: |
+          set -o pipefail
+          npx tauri build 2>&1 | tee build.log || {
+            # hatayı Actions özetine (annotation) taşı ki log indirilemese de okunabilsin
+            grep -nE "error(\[|:)|Error:|failed|cannot find|expected" build.log | head -25 | sed 's/^/::error::/'
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pofi-windows
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/pofi.exe
+
+      - name: Publish update to pofi-releases
+        if: env.TAURI_SIGNING_PRIVATE_KEY != '' && env.RELEASES_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+          LAST: ${{ needs.decide.outputs.last }}
+          HEAD: ${{ needs.decide.outputs.head }}
+        run: |
+          if [ -n "$LAST" ] && git cat-file -e "$LAST" 2>/dev/null; then RANGE="$LAST..$HEAD"; else RANGE="-1 $HEAD"; fi
+          git log --no-merges --format='- %s' $RANGE | grep -v -i -E 'skip-notes|^- (merge|wip)' | head -5 > "$RUNNER_TEMP/notes.md" || true
+          printf '\n<!-- sha:%s -->\n' "$HEAD" >> "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+          cd src-tauri/target/release/bundle/nsis
+          EXE="Pofi_${VERSION}_x64-setup.exe"
+          test -f "$EXE" && test -f "$EXE.sig"
+          python - <<EOF
+          import json, datetime
+          sig = open("$EXE.sig").read().strip()
+          url = "https://github.com/alibingul-dev/pofi-releases/releases/download/v$VERSION/$EXE"
+          json.dump({"version": "$VERSION", "notes": "Pofi v$VERSION",
+                     "pub_date": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+                     "platforms": {"windows-x86_64": {"signature": sig, "url": url}}},
+                    open("latest.json", "w"))
+          EOF
+          gh release create "v$VERSION" "$EXE" "$EXE.sig" latest.json \
+            --repo alibingul-dev/pofi-releases --title "Pofi v$VERSION" \
+            --notes-file "$RUNNER_TEMP/notes.md" --latest
