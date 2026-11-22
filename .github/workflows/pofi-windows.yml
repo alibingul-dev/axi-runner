@@ -2,7 +2,7 @@ name: pofi-windows
 # Pofi Windows build on the public runner (private pofi repo has no Actions budget).
 # Every 30 min: if pofi@v0.1 has a commit newer than the last pofi-releases release, build, sign and publish v0.1.<last+1>.
 # Release notes = commit subjects since the last released sha (Agent Resume's Pofi agent posts from them).
-# Needs secrets here: PRIVATE_REPO_TOKEN (read alibingul-dev/pofi), RELEASES_TOKEN (write pofi-releases), TAURI_SIGNING_PRIVATE_KEY.
+# Needs secrets here: POFI_READ_TOKEN (read-only, alibingul-dev/pofi), RELEASES_TOKEN (write pofi-releases), TAURI_SIGNING_PRIVATE_KEY.
 on:
   schedule:
     - cron: '7,37 * * * *'
@@ -26,7 +26,7 @@ jobs:
     steps:
       - id: d
         env:
-          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          GH_TOKEN: ${{ secrets.POFI_READ_TOKEN }}
           FORCE: ${{ inputs.force }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
@@ -63,7 +63,7 @@ jobs:
         with:
           repository: alibingul-dev/pofi
           ref: ${{ needs.decide.outputs.head }}
-          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          token: ${{ secrets.POFI_READ_TOKEN }}
           fetch-depth: 50
 
       - uses: actions/setup-python@v5
