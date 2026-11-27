@@ -1,0 +1,56 @@
+name: plant-revenue-data
+# One-off / on-demand: Borusan EnBW plant hourly KGUP v1, KGUP, UEVM + PTF/SMF for the 2026 revenue workbook.
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/plant-revenue.yml"]
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "start date"
+        default: "2026-01-01"
+      end:
+        description: "end date"
+        default: "2026-11-26"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plant-revenue
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: alibingul-dev/axi-epias-data
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install eptr2 pandas
+
+      - name: Fetch
+        env:
+          EPIAS_USERNAME: ${{ secrets.EPIAS_USERNAME }}
+          EPIAS_PASSWORD: ${{ secrets.EPIAS_PASSWORD }}
+          START: ${{ github.event.inputs.start || '2026-01-01' }}
+          END: ${{ github.event.inputs.end || '2026-11-26' }}
+        run: python -u scripts/plant_revenue_fetch.py
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add plantrev/
+          if git diff --staged --quiet; then echo "no changes"; else
+            git commit -m "plantrev: 2026 plant hourly data"
+            git pull --rebase -q && git push
+          fi
